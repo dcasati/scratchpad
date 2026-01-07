@@ -13,7 +13,7 @@ ms.custom:
 
 # Systematic approach to troubleshooting network problems in AKS clusters
 
-Network problems in Azure Kubernetes Service (AKS) clusters can manifest in various ways, from API server connectivity issues to pod-to-pod communication failures. This article provides a systematic approach to diagnosing and resolving network problems, focusing on methodology and decision-making rather than prescriptive step-by-step instructions.
+Network problems in Azure Kubernetes Service (AKS) clusters can manifest in various ways, from API server connectivity issues to ingress/egress challenges to pod-to-pod communication failures. This article provides a systematic approach to diagnosing and resolving network problems, focusing on methodology and decision-making rather than prescriptive step-by-step instructions.
 
 ## General troubleshooting methodology
 
@@ -85,7 +85,7 @@ The API server may have network restrictions that prevent access:
 
 - **Authorized IP ranges** - Verify whether the cluster has API server authorized IP ranges enabled and if the client's IP is included
 - **Private cluster configuration** - Determine if the cluster is private and whether access is being attempted from an appropriate network location
-- **Network policies** - Check if network policies are blocking access to the control plane
+- **Network policies** - Check if network policies or Azure Network Security Group (NSG) rules are blocking access to the control plane
 
 ### Connectivity path validation
 
@@ -103,6 +103,7 @@ Even if network connectivity exists, access may be denied:
 - **Credential validity** - Ensure kubeconfig credentials are current and valid
 - **RBAC configuration** - Verify that the user or service principal has appropriate permissions
 - **Token expiration** - Check if authentication tokens have expired
+- **HTTP status codes** - Analyze HTTP response codes for clues (e.g., 401 Unauthorized, 403 Forbidden)
 
 ### Rate limiting and throttling
 
@@ -123,9 +124,9 @@ When pods fail to obtain IP addresses, investigate these areas:
 
 The most common cause is running out of available IP addresses:
 
-- **Subnet sizing** - Evaluate whether the subnet has sufficient IP addresses for the cluster's scale
+- **Subnet sizing** - With Azure CNI in flat networking mode (i.e. not Overlay), evaluate whether the subnet has sufficient IP addresses for the cluster's scale
 - **IP allocation efficiency** - Understand how your CNI plugin allocates IPs (per-pod vs. per-node)
-- **IP address collision** - Investigate whether the AKS cluster is learning new network addresses from other sources (for example, from on-premises) and whether this is causing collisions in routing. One example would be when a cluster connects back to an on-premises datacenter and is learning new network address spaces through Border Gateway Protocol (BGP)
+- **IP address collision** - Investigate whether the AKS cluster Vnet is learning new network addresses from other sources (for example, from on-premises) and whether this is causing collisions in routing. One example would be when a cluster connects back to an on-premises datacenter and is learning new network address spaces through Border Gateway Protocol (BGP)
 
 ### CNI plugin issues
 
@@ -143,25 +144,28 @@ When services are not accessible from pods, systematically evaluate:
 
 Ensure the service is properly registered and discoverable:
 
-- **Endpoint creation** - Verify that endpoints are automatically created for the service
 - **Label selectors** - Confirm that service label selectors correctly match target pods
+- **Endpoint creation** - Verify that endpoints are automatically created for the service and the endpoint IPs correspond to healthy target pods
 - **Pod readiness** - Check that backend pods are in a ready state
 
 ### Network connectivity layer
 
-Test connectivity at different levels:
+Test connectivity at different levels starting from a pod inside the cluster and then from a client outside the cluster:
 
 - **Pod IP reachability** - Verify direct pod IP connectivity bypassing the service
-- **Container port configuration** - Ensure containers are listening on expected ports
+- **Application listening ports** - Ensure the application runtime is listening on the expected ports
+- **Container port configuration** - Ensure containers are listening on the port matching the application runtime port
 - **Service port mapping** - Confirm service port configuration matches container ports
+
+Access to the pod logs may help verify requests are reaching the application during the above testing.
 
 ### Service proxy layer
 
 The kube-proxy component handles service load balancing:
 
 - **kube-proxy health** - Verify kube-proxy pods are running and healthy
-- **iptables/IPVS rules** - Examine whether proper forwarding rules are configured
-- **Service mode** - Understand which proxy mode is in use (iptables, IPVS, etc.)
+- **Service mode** - Understand which proxy mode is in use (iptables, IPVS, NFTables, etc.)
+- **iptables/IPVS/NFTables rules** - Examine whether proper forwarding rules are configured
 
 ### Network policies and security
 
@@ -170,12 +174,16 @@ Access may be blocked by security controls:
 - **Network policy impact** - Determine if Kubernetes Network Policies are restricting traffic
 - **CNI plugin policies** - Check if the CNI plugin (e.g., Calico, Cilium) has additional policies
 - **Platform-level controls** - Consider Azure NSGs or other platform security controls
+- **NSG Mismatches** - AKS Manages a Network Security Group at the cluster node level, however there may also be an NSG on the subnet that doesn't match the cluster applied rules
 
 ## Approach to node-to-API server connectivity
 
 When nodes or pods cannot reach the API server, investigate from multiple angles:
 
 ### Internal service functionality
+
+> [!NOTE]
+> Diego: Not sure I follow this section. Need clarification. Is this about ClusterIP services? If so, there's no kubernetes-internal LB in that case. 
 
 The kubernetes service provides API server access within the cluster:
 
@@ -188,7 +196,7 @@ The kubernetes service provides API server access within the cluster:
 Trace the path from node/pod to API server:
 
 - **Routing configuration** - Check that routes exist to reach the API server
-- **Platform networking** - Verify Azure Virtual Network configuration is correct
+- **Platform networking** - Verify Azure Virtual Network configuration is correct (`Diego: Need to clarify what this means`)
 - **Firewall traversal** - Ensure outbound rules permit API server communication
 
 ### Configuration-specific issues
@@ -197,17 +205,17 @@ Different cluster configurations present different challenges:
 
 - **Private clusters** - Validate that private DNS zones are configured correctly and that DNS forwarders work
 - **Custom DNS** - If using custom DNS servers, ensure they can resolve cluster-internal names
-- **Outbound restrictions** - Verify that egress restrictions don't block required FQDNs
+- **Outbound restrictions** - Verify that egress restrictions don't block required FQDNs (`Diego: Is this a dublicate of the next point?`)
 - **User-Defined Routes (UDR) with egress lockdown** - When using UDR in outbound type with restricted egress (such as through Azure Firewall or a network virtual appliance), ensure all required FQDNs and network rules are properly configured. Missing rules can prevent nodes from reaching the API server, container registries, or other essential services. For detailed requirements, see [Control egress traffic for cluster nodes in AKS](/azure/aks/outbound-rules-control-egress)
 
 ### Authorization layer
 
 Network connectivity is necessary but not sufficient:
 
-- **RBAC configuration** - Ensure pods have appropriate ServiceAccount permissions
+- **RBAC configuration** - Ensure pods have appropriate ServiceAccount permissions (`Diego: Is this duplicate of the next point?`)
 - **Workload Identity** - Check if the Workload Identity has the correct set of RBAC permissions and that the Managed Identity tied to it has the appropriate role assignments
 - **Role bindings** - Verify that necessary RoleBinding and ClusterRoleBinding objects exist
-- **Admission controllers** - Consider whether admission webhooks might be affecting access
+- **Admission controllers** - Consider whether admission webhooks might be affecting access (`Diego: Not sure this is needed, but lets discuss`)
 
 ## Diagnostic tools and techniques
 
@@ -221,7 +229,7 @@ Choose appropriate tools based on the specific problem you're investigating. The
 
 ### Traffic analysis
 
-- **Packet captures** - Capture traffic at various points to understand flow
+- **Packet captures** - Capture traffic at various points to understand flow ([Container Network Observability with Hubble](https://learn.microsoft.com/en-us/azure/aks/container-network-observability-how-to?tabs=cilium), [Inspektor Gadget](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/logs/capture-system-insights-from-aks?tabs=azurelinux30#what-is-inspektor-gadget))
 - **Flow logs** - Use Azure NSG flow logs or VNet flow logs to track traffic
 - **Service mesh observability** - If using a service mesh, leverage its observability features
 
@@ -249,6 +257,7 @@ Other contributors:
 - [Michael Walters](https://www.linkedin.com/in/mrwalters1988/) | Senior Consultant
 - [Ayobami Ayodeji](https://www.linkedin.com/in/ayobamiayodeji) | Senior Program Manager
 - [Bahram Rushenas](https://www.linkedin.com/in/bahram-rushenas-306b9b3) | Architect
+- [Steve Griffith](https://www.linkedin.com/in/stevewgriffith/) | Principal Product Manager
 
 ## Next steps
 
