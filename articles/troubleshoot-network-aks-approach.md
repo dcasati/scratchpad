@@ -3,7 +3,7 @@ title: Systematic approach to troubleshooting network problems in AKS clusters
 description: Learn about systematic approaches and methodologies to troubleshoot network problems in Azure Kubernetes Service (AKS) clusters. For detailed troubleshooting guides, see the AKS connectivity troubleshooting documentation.
 author: dcasati
 ms.author: dicasati
-ms.date: 04/01/2026
+ms.date: 04/02/2026
 ms.topic: conceptual
 ms.subservice: architecture-guide
 ms.custom:
@@ -105,7 +105,7 @@ When troubleshooting, symptoms often provide strong signals about which layer is
 |----------------|-----------------|-------------|
 | Cannot reach API server from client | Control plane, Platform | Often related to authorized IP ranges, private cluster access, DNS resolution, or NSG/firewall rules |
 | Intermittent API server errors (429, timeouts) | Control plane | Typically caused by rate limiting, excessive API calls, or client behavior |
-| Pod-to-pod communication fails | Pod network, Data plane | Usually indicates CNI, routing, or IP addressing issues |
+| Pod-to-pod communication fails | Pod network, Data plane | Usually indicates CNI, routing, or IP addressing issues. Could also indicate the presence of a networking policy blocking traffic (Network Security Group or in-cluster by a network policy like Calico or Cillium) |
 | Pod can reach IP but not service | Service layer | Suggests service misconfiguration, kube-proxy/eBPF issues, or port mismatches |
 | Service resolves but connection fails | Service, Network policy, Platform | May indicate blocked traffic (Network Policies, NSGs) or backend pod issues |
 | DNS resolution fails inside cluster | DNS layer | Typically CoreDNS issues, misconfiguration, or upstream DNS problems |
@@ -169,6 +169,7 @@ When pods fail to obtain IP addresses, investigate these areas:
 
 The most common cause is running out of available IP addresses:
 
+- **Node surge** - During maintenance operations, you can decrease the node surge to a lower number from its default value. Decreasing node surge can to a lower count can help minimize the IP address consuption during these operations.
 - **Subnet sizing** - With Azure CNI in flat networking mode (non-Overlay), evaluate whether the subnet has sufficient IP addresses for the cluster's scale. Overlay mode reduces subnet pressure but introduces encapsulation and different routing characteristics
 - **IP allocation efficiency** - Understand how your CNI plugin allocates IPs (per-pod vs. per-node)
 - **IP address collision** - Investigate whether the AKS cluster VNet is learning new network addresses from other sources (for example, from on-premises) and whether this is causing collisions in routing. One example would be when a cluster connects back to an on-premises datacenter and is learning new network address spaces through Border Gateway Protocol (BGP)
@@ -209,8 +210,8 @@ Access to the pod logs may help verify requests are reaching the application dur
 The kube-proxy component handles service load balancing:
 
 - **kube-proxy health** - Verify kube-proxy pods are running and healthy. In clusters using eBPF dataplanes (e.g., Cilium), kube-proxy may not be present or responsible for service routing. See [Configure Azure CNI Powered by Cilium in Azure Kubernetes Service (AKS)](https://learn.microsoft.com/en-us/azure/aks/azure-cni-powered-by-cilium) for more information.
-- **Service mode** - Understand which proxy mode is in use (iptables, IPVS, NFTables, etc.)
-- **iptables/IPVS/NFTables rules** - Examine whether proper forwarding rules are configured
+- **Service mode** - Understand which proxy mode is in use (iptables, NFTables, etc.)
+- **iptables/NFTables rules** - Examine whether proper forwarding rules are configured
 
 Note that NFTables support is evolving and may depend on Kubernetes version and cluster configuration.
 
@@ -263,7 +264,8 @@ Network connectivity is necessary but not sufficient:
 - **Workload Identity configuration** - When using Workload Identity for Azure service authentication, verify that:
   - The managed identity associated with the workload has appropriate Azure RBAC role assignments
   - The federated identity credential is correctly configured
-  - The service account is properly annotated with the client ID
+  - The Kubernetes service account is properly annotated with the client ID
+  - Ensure that the deployment file is using the proper annotations for workload identiy (`azure.workload.identity/use: "true"`). See [Use Microsoft Entra Workload ID with Azure Kubernetes Service (AKS)](https://learn.microsoft.com/en-us/azure/aks/workload-identity-overview?tabs=dotnet) for more details.
 - **Role bindings** - Verify that necessary RoleBinding and ClusterRoleBinding objects exist
 
 ## Diagnostic tools and techniques
